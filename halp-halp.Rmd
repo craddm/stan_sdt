@@ -1,0 +1,279 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(rstan)
+```
+
+```{r}
+tACS_Data <- read_excel("~/GitHub/IntExtTACS/data/tACSData 1-21.xlsx", sheet = "RawData")
+tACS_Data <- tACS_Data %>% 
+  filter(`TrialType[Trial]` != "NULL") %>%
+  mutate(Stimulation = factor(.$Group, labels = c("Sham","Active")),
+         Session = factor(.$Session, labels = c("First","Second")),
+         Light = factor((`TrialType[Trial]` == "light" | `TrialType[Trial]` == "bothWeak") + 0,
+                        levels = c(1, 0),
+                        labels = c("Light","No light")),
+         Touch = factor((`TrialType[Trial]` == "Weak" | `TrialType[Trial]` == "bothWeak") + 0,
+                        levels = c(1, 0),
+                        labels = c("Touch","No touch")),
+         Response = ordered(.$`ResponsePrompt.RESP[Trial]`,
+                           levels = c(4, 5, 6, 7),
+                           labels = c("Definitely yes", "Maybe yes", "Maybe no", "Definitely no")),
+         Reported = (.$`ResponsePrompt.RESP[Trial]` < 6)+0,
+         Accuracy = ((Reported == 1 & Touch == "Touch") | (Reported == 0 & Touch == "No touch")) + 0,
+         Confidence = factor((Response == "Definitely yes" | Response == "Definitely no") + 0, 
+                             levels = c(1, 0),
+                             labels = c("Definitely", "Maybe"))
+  )
+
+
+```
+
+```{r}
+first_test <- tACS_Data %>%
+  filter(Subject == 1, Stimulation == "Sham") %>%
+  select(Light, Touch, Response, Accuracy, Reported)
+
+first_test
+mm <- model.matrix(~Touch + Light,first_test)
+mm
+
+list_data <- list(N = nrow(first_test), K = 3, y = first_test$Reported, para = mm)
+list_data
+
+```
+
+```{r stan_model}
+
+model <- "
+data {
+  int<lower = 0> N;
+  int<lower = 0> K;
+  matrix[N,K] para;
+  int<lower = 0, upper = 1> y[N];
+}
+parameters {
+  vector[K] beta;
+}
+model {
+  y ~ bernoulli_logit(para * beta);
+}
+"
+
+```
+
+```{r}
+fit1 <- stan(
+  model_code = model,
+  data = list_data,
+  chains = 2
+)
+```
+```{r}
+fit1
+```
+
+```{r}
+totals <- first_test %>% group_by(Touch) %>%
+  summarise(counts = sum(Reported))
+totals
+list_data
+tot_list <- list(N = nrow(first_test)/2, hits = totals$counts[1], fas = totals$counts[2])
+tot_list
+model_k <- "
+data {
+  int<lower = 0> N;
+  int<lower = 0> hits;
+  int<lower = 0> fas;
+}
+parameters {
+  real<lower = 0, upper = 1> HR;
+  real<lower = 0, upper = 1> FAR;
+}
+model {
+  hits ~ binomial(N, HR);
+  fas ~ binomial(N, FAR);
+}
+"
+
+```
+
+```{r}
+fit2 <- stan(
+  model_code = model_k,
+  data = tot_list,
+  chains = 2
+)
+```
+
+```{r}
+totals <- first_test %>% group_by(Touch) %>%
+  summarise(counts = sum(Reported))
+totals
+list_data
+
+
+tot_list <- list(N = nrow(first_test)/2, hits = totals$counts[1], fas = totals$counts[2])
+tot_list
+
+model_dpr <- "
+data {
+  int<lower = 0> N;
+  int<lower = 0> hits;
+  int<lower = 0> fas;
+}
+parameters {
+  real d;
+  real c;
+}
+transformed parameters {
+  real<lower = 0, upper = 1> thetah;
+  real<lower = 0, upper = 1> thetaf;
+  thetah = Phi(d / 2 - c);
+  thetaf = Phi(-d / 2 - c);
+}
+model {
+  d ~ normal(0, 2);
+  c ~ normal(0, .707);
+  hits ~ binomial(N, thetah);
+  fas ~ binomial(N, thetaf);
+}
+"
+
+```
+
+```{r}
+fit3 <- stan(
+  model_code = model_dpr,
+  data = tot_list,
+  chains = 2
+)
+
+```
+```{r}
+second_test <- tACS_Data %>%
+  filter(Subject == 1, Stimulation == "Sham") %>%
+  select(Touch, Light, Response, Accuracy, Reported)
+second_test
+```
+```{r}
+totals_light <- second_test %>% group_by(Touch, Light) %>%
+  summarise(counts = sum(Reported))
+totals_light
+```
+
+```{r}
+
+list_data
+```
+
+```{r}
+totals_light
+light_mm <- model.matrix(~Light,totals_light)
+new_list <- list(N = nrow(second_test)/4, K = nlevels(totals_light$Light), hits = totals_light$counts[1:2], fas = totals_light$counts[3:4])
+new_list
+```
+```{r}
+model_dpr_2 <- "
+data {
+  int<lower = 0> N;
+  int<lower = 1> K;
+  int<lower = 0> hits[K];
+  int<lower = 0> fas[K];
+}
+transformed data {
+  
+}
+parameters {
+  vector[K] d;
+  vector[K] c;
+}
+transformed parameters {
+  real<lower = 0, upper = 1> thetah[K];
+  real<lower = 0, upper = 1> thetaf[K];
+  for (i in 1:K) {
+    thetah[i] = Phi(d[i] / 2 - c[i]);
+    thetaf[i] = Phi(-d[i] / 2 - c[i]);
+  }
+}
+model {
+  d ~ normal(0, 2);
+  c ~ normal(0, .707);
+  hits ~ binomial(N, thetah);
+  fas ~ binomial(N, thetaf);
+}
+"
+
+```
+
+```{r}
+fit4 <- stan(
+  model_code = model_dpr_2,
+  data = new_list,
+  chains = 2
+)
+
+```
+
+```{r}
+totals_light
+light_mm <- model.matrix(~Light,totals_light)
+light_mm
+new_list_f <- list(N = nrow(second_test)/4, K = 2, Mat = light_mm, counts = totals_light$counts, Nc = nrow(totals_light))
+new_list_f
+
+```
+
+```{r}
+model_dpr_4 <- "
+data {
+  int<lower = 0> N;
+  int<lower = 1> K;
+  int<lower = 1> Nc;
+  matrix[Nc, K] Mat;
+  int<lower = 0> counts[Nc];
+}
+
+parameters {
+  vector[K] d;
+  vector[K] c;
+  real muD;
+  real muC;
+}
+transformed parameters {
+  real<lower = 0, upper = 1> thetah[K];
+  real<lower = 0, upper = 1> thetaf[K];
+  for (i in 1:K) {
+    thetah[i] = Phi(d[i] / 2 - c[i]);
+    thetaf[i] = Phi(-d[i] / 2 - c[i]);
+  }
+}
+model {
+  muD ~ normal(0,2);
+  muC ~ normal(0, .707);
+  d ~ normal(0, 2);
+  c ~ normal(0, .707);
+  counts ~ binomial(N, thetah);
+  fas ~ binomial(N, thetaf);
+}
+"
+
+```
+
+```{r}
+fit5 <- stan(
+  model_code = model_dpr_4,
+  data = new_list_f,
+  chains = 2
+)
+```
+
