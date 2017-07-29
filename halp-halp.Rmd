@@ -182,6 +182,7 @@ light_mm <- model.matrix(~Light,totals_light)
 new_list <- list(N = nrow(second_test)/4, K = nlevels(totals_light$Light), hits = totals_light$counts[1:2], fas = totals_light$counts[3:4])
 new_list
 ```
+
 ```{r}
 model_dpr_2 <- "
 data {
@@ -266,6 +267,10 @@ model {
   fas ~ binomial(N, thetaf);
 }
 "
+
+```
+
+```{r}
 
 ```
 

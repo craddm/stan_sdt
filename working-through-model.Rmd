@@ -1,0 +1,317 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is a test of a hierarchical d model using Stan. First we load data and packages.
+
+```{r load_packages}
+library(tidyverse)
+library(rstan)
+library(readxl)
+tACS_Data <- read_excel("~/GitHub/IntExtTACS/data/tACSData 1-21.xlsx", sheet = "RawData")
+tACS_Data <- tACS_Data %>% 
+  filter(`TrialType[Trial]` != "NULL") %>%
+  mutate(Stimulation = factor(.$Group, labels = c("Sham","Active")),
+         Session = factor(.$Session, labels = c("First","Second")),
+         Light = factor((`TrialType[Trial]` == "light" | `TrialType[Trial]` == "bothWeak") + 0,
+                        levels = c(1, 0),
+                        labels = c("Light","No light")),
+         Touch = factor((`TrialType[Trial]` == "Weak" | `TrialType[Trial]` == "bothWeak") + 0,
+                        levels = c(1, 0),
+                        labels = c("Touch","No touch")),
+         Response = ordered(.$`ResponsePrompt.RESP[Trial]`,
+                           levels = c(4, 5, 6, 7),
+                           labels = c("Definitely yes", "Maybe yes", "Maybe no", "Definitely no")),
+         Reported = (.$`ResponsePrompt.RESP[Trial]` < 6)+0,
+         Accuracy = ((Reported == 1 & Touch == "Touch") | (Reported == 0 & Touch == "No touch")) + 0,
+         Confidence = factor((Response == "Definitely yes" | Response == "Definitely no") + 0, 
+                             levels = c(1, 0),
+                             labels = c("Definitely", "Maybe"))
+  )
+
+```
+
+
+To keep things simple, we'll start by selecting data from the the Light and Sham conditions only, and keep only the columns Subject, Reported, and Touch.
+
+```{r}
+test_data <- filter(tACS_Data, Stimulation == "Sham", Light == "Light") %>%
+  select(Subject, Reported, Touch)
+test_data
+
+```
+
+Let's convert that into counts.
+```{r}
+test_counts <- test_data %>%
+  group_by(Subject, Touch) %>%
+  summarise(totals = sum(Reported), trial_count = n())
+test_counts
+```
+
+We now have two rows per participant, one for "hits", one for "false alarms". It'd be nice to have standard, max likelihood estimates of d-prime. Some of the participants make no false alarms or have 100% hit rates. This causes trouble for the MLE. We can add a constant to the totals and trial_count to effectively correct that.
+
+
+```{r}
+test_counts$totals <- test_counts$totals + .5
+test_counts$trial_count <- test_counts$trial_count + 1
+test_counts
+```
+
+We can convert those totals into hit and false alarms rates and from there compute d-prime.
+
+```{r}
+d_prime_MLE <- test_counts %>%
+  mutate(rate = totals/trial_count) %>%
+  select(Subject, Touch, rate) %>%
+  spread(Touch,rate) %>%
+  mutate(d_prime = qnorm(Touch)-qnorm(`No touch`),
+         c_raw = -0.5*(qnorm(Touch) + qnorm(`No touch`)),
+         c_prime = c_raw/d_prime)
+d_prime_MLE
+```
+
+```{r}
+ggplot(d_prime_MLE, aes(x = reorder(Subject, d_prime), y = d_prime))+
+  geom_point() +
+  geom_hline(yintercept = mean(d_prime_MLE$d_prime))
+
+ggplot(d_prime_MLE, aes(x = reorder(Subject, c_prime), y = c_prime))+
+  geom_point() +
+  geom_hline(yintercept = mean(d_prime_MLE$c_prime))
+
+```
+
+As we can see we have one person there who has a negative d_prime and a strongly negative c_prime.
+
+```{r}
+ggplot(d_prime_MLE, aes(x = d_prime))+geom_density()
+ggplot(d_prime_MLE, aes(x = c_prime))+geom_density()
+```
+
+# Building a Stan model
+
+Let's go back to our data before we added a constant to it to deal with floor and ceiling effects - we won't need that for Stan.
+
+```{r}
+stan_counts <- test_data %>%
+  group_by(Subject, Touch) %>%
+  summarise(totals = sum(Reported), trial_count = n())
+stan_counts
+```
+
+To keep it super simple, let's start off estimating hit rate only
+
+```{r}
+hits_only <- filter(stan_counts, Touch == "Touch")
+
+hits_pooled <- list(N = dim(hits_only)[1],  # 21 participants
+                   y = hits_only$totals, #total responses
+                   K = hits_only$trial_count) #total trial
+                   
+                   
+```
+
+## Complete pooling
+
+Now we set up a simple Stan model, with complete pooling.
+
+```{stan output.var= hits_cp}
+data {
+  int<lower = 0> N;
+  int<lower = 0> K[N];
+  int<lower = 0> y[N];
+}
+parameters {
+  real<lower = 0, upper = 1> phi; // chance of success
+}
+model {
+  y ~ binomial(K, phi);
+}
+```
+
+
+```{r}
+fit_hits <- sampling(hits_cp, data = hits_pooled)
+```
+```{r}
+fit_hits
+```
+
+This is a "complete pooling" estimate of the hit rate.
+
+## No pooling
+
+Next we make a model with no pooling - an estimate for each individual.
+
+```{stan output.var = no_pool_hits, message = FALSE, warning = FALSE, echo = FALSE}
+data {
+  int<lower = 0> N;
+  int<lower = 0> K[N];
+  int<lower = 0> y[N];
+}
+parameters {
+  vector<lower = 0, upper = 1>[N] theta; // chance of success
+}
+model {
+  y ~ binomial(K, theta);
+}
+```
+
+```{r}
+no_pool_fit <- sampling(no_pool_hits, data = hits_pooled)
+```
+```{r}
+no_pool_fit
+stan_plot(no_pool_fit, pars = "theta")
+```
+
+Now there are 21 individual parameters, one for each subject and their hit-rate. 
+
+
+## Partial pooling
+
+Our final model will attempt to use information each parameter to inform the other parameters.
+```{stan output.var=part_pool}
+data {
+  int<lower = 0> N;
+  int<lower = 0> K[N];
+  int<lower = 0> y[N];
+}
+parameters {
+  real<lower = 0, upper = 1> phi; // chance of success (population)
+  real<lower = 1> kappa; // pop concentration
+  vector<lower = 0, upper = 1>[N] theta; //indiv success
+}
+model {
+  kappa ~ pareto(1, 1.5);
+  theta ~ beta(phi * kappa, (1 - phi) * kappa);
+  y ~ binomial(K, theta);
+}
+```
+```{r}
+hits_pp <- sampling(part_pool, data = hits_pooled)
+hits_pp
+```
+```{r}
+stan_plot(hits_pp, pars = "theta")
+stan_plot(no_pool_fit, pars = "theta")
+```
+
+In this case the pooling seems to have made very little difference - this is a fully balanced design so there is probably very little to be done.
+
+### log-odds prior 
+Didnt' full understand the last prior, so here's one with log-odds.
+
+```{stan output.var = log_odds}
+data {
+  int<lower = 0> N;
+  int<lower = 0> K[N];
+  int<lower = 0> y[N];
+}
+parameters {
+  real mu;
+  real<lower = 0> sigma;
+  vector[N] alpha;
+}
+model {
+  mu ~ normal(-1, 1);
+  sigma ~ normal(0, 1);
+  alpha ~ normal(mu, sigma);
+  y ~ binomial_logit(K, alpha);
+}
+```
+
+```{r}
+hits_log_odds <- sampling(log_odds, data = hits_pooled)
+hits_log_odds
+```
+```{r}
+stan_plot(hits_log_odds, pars = "alpha")
+stan_plot(hits_pp, pars = "theta")
+```
+
+## comparison of pooled versus no pooled, versus MLE
+
+```{r}
+summary(hits_log_odds, pars = "alpha")$summary[,1]
+
+d_prime_MLE$hits_log <- summary(hits_log_odds, pars = "alpha")$summary[,1]
+d_prime_MLE$hits_inv <- exp(d_prime_MLE$hits_log)/(1+exp(d_prime_MLE$hits_log))
+d_prime_MLE
+
+ggplot(d_prime_MLE, aes(x = reorder(Subject, Touch), y = Touch)) + geom_point() +
+         geom_point(aes(x = reorder(Subject, Touch), y = hits_inv), colour = "red")
+```
+
+Virtually no difference in this case.
+
+# Factorial model including false alarms.
+
+
+```{r}
+stan_counts
+```
+
+```{r}
+all_data <- list(N = dim(stan_counts)[1],
+                 K = stan_counts$trial_count,
+                 y = stan_counts$totals,
+                 preds = model.matrix(~Touch,stan_counts),
+                 npar = 2)
+all_data
+```
+
+Let's now try to expand this to a design with a factor.
+```{stan output.var=hits_and_FAs}
+data {
+  int<lower = 0> N;
+  int<lower = 0> K[N]; //n trials
+  int<lower = 0> y[N]; //n responses
+  int<lower = 1> npar; // number of pop effects
+  matrix[N, npar] preds; // design matrix
+  //
+  int<lower = 1> J_1[N];
+  int<lower = 1> N_1;
+  int<lower = 1> M_1;
+  vector[N] z_1_1;
+}
+transformed data{
+  int Kc = npar -1;
+  matrix[N, npar - 1] Xc;
+  vector[npar - 1] means_X;
+  for (i in 2:npar) {
+    means_X[i -1] = mean(preds[, i]);
+    Xc[, i - 1] = preds[, i] - means_X[i -1];
+  }
+}
+parameters {
+  vector[Kc] b;
+  real temp_Intercept;
+  vector<lower = 0>[M_1] sd_1;
+  vector[N_1] z_1[M_1];
+}
+transformed parameters {
+  vector[N_1] r_1_1 = sd_1[1] * (z_1[1]);
+}
+model {
+  vector[N] mu = Xc * b + temp_Intercept;
+  for (n in 1:N) {
+    mu[n] = mu[n] + (r_1_1[J_1[n]]) * z_1_1[n];
+  }
+  sd_1 ~ student_t(3,0,10);
+  z_1[1] ~ normal(0,1);
+  y ~ binomial_logit(K, mu);
+}
+generated quantities{
+  real b_Intercept = temp_Intercept - dot_product(means_X, b);
+}
+
+```
+```{r}
+fac_fit <- sampling(hits_and_FAs, data = all_data)
+fac_fit
+```
+
+
