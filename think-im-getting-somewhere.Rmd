@@ -85,6 +85,11 @@ group_list <- list(K = length(unique(group_totals$Subject)), N = 51, hits = grou
 group_list
 ```
 ```{r}
+
+
+```
+
+```{r}
 model_dpr_h <- "
 data {
   int<lower = 1> K;
@@ -99,7 +104,7 @@ parameters {
   real mud;
   //real<lower = 0> sigmad[K];
   real<lower = 0> sigmad;
-  //real<lower = 0> sigmac;
+  real<lower = 0> sigmac;
   //real<lower = 0> lambdad;
   //real<lower = 0> lambdac;
 }
@@ -117,16 +122,19 @@ transformed parameters {
   }
 }
 model {
-  sigmad ~ gamma(1,1);
-  muc ~ normal(0, 2);
-  mud ~ normal(0, sigmad);
-  d ~ normal(mud, .5);
-  c ~ normal(muc, 2);
+  muc ~ normal(0, .01);
+  mud ~ normal(0, .01);
+  sigmad ~ normal(0,100);
+  sigmac ~ normal(0,100);
+  d ~ normal(mud, sigmad);
+  c ~ normal(muc, sigmac);
   hits ~ binomial(N, thetah);
   fas ~ binomial(N, thetaf);
 }
 "
+```
 
+```{r}
 
 ```
 
@@ -139,3 +147,75 @@ fit_dprime_h <- stan(
 
 fit_dprime_h
 ```
+
+```{r}
+model_dpr_better_prior <- "
+data {
+  int<lower = 1> K;
+  int<lower = 0> N;
+  int<lower = 0> hits[K];
+  int<lower = 0> fas[K];
+}
+parameters {
+  vector[K] d;
+  vector[K] c;
+  real muc;
+  real mud;
+  //real<lower = 0> sigmad[K];
+  real<lower = 0> sigmad;
+  real<lower = 0> sigmac;
+  //real<lower = 0> lambdad;
+  //real<lower = 0> lambdac;
+}
+transformed parameters {
+  real<lower = 0, upper = 1> thetah[K];
+  real<lower = 0, upper = 1> thetaf[K];
+  //real<lower = 0> sigmac;
+  //real<lower = 0> sigmad;
+  //sigmac = inv_sqrt(lambdac);
+  //sigmad = inv_sqrt(lambdad);
+
+  for (i in 1:K) {
+    thetah[i] = Phi(d[i] / 2 - c[i]);
+    thetaf[i] = Phi(-d[i] / 2 - c[i]);
+  }
+}
+model {
+  muc ~ normal(0, 5);
+  mud ~ normal(0, 5);
+  sigmad ~ normal(0,5);
+  sigmac ~ normal(0,5);
+  d ~ normal(mud, sigmad);
+  c ~ normal(muc, sigmac);
+  hits ~ binomial(N, thetah);
+  fas ~ binomial(N, thetaf);
+}
+"
+
+```
+
+```{r}
+fit_dprime_prior <- stan(
+  model_code = model_dpr_better_prior,
+  data = group_list,
+  chains = 4
+)
+```
+
+```{r}
+fit_dprime_prior
+```
+```{r}
+ggplot(d_prime_MLE, aes(x = reorder(Subject, d_prime), y = d_prime))+
+  geom_point() +
+  geom_point(aes(y = d_prime_prior), colour = "red")+
+  geom_hline(yintercept = mean(d_prime_MLE$d_prime)) +
+  geom_hline(yintercept = mean(d_prime_MLE$d_prime_prior), linetype = "dashed")
+
+
+```
+
+```{r}
+
+```
+
