@@ -84,10 +84,6 @@ group_totals$counts[seq(1, length(group_totals$counts), 2)]
 group_list <- list(K = length(unique(group_totals$Subject)), N = 51, hits = group_totals$counts[seq(1, length(group_totals$counts), 2)], fas = group_totals$counts[seq(2, length(group_totals$counts), 2)])
 group_list
 ```
-```{r}
-
-
-```
 
 ```{r}
 model_dpr_h <- "
@@ -135,10 +131,6 @@ model {
 ```
 
 ```{r}
-
-```
-
-```{r}
 fit_dprime_h <- stan(
   model_code = model_dpr_h,
   data = group_list,
@@ -161,30 +153,24 @@ parameters {
   vector[K] c;
   real muc;
   real mud;
-  //real<lower = 0> sigmad[K];
   real<lower = 0> sigmad;
   real<lower = 0> sigmac;
-  //real<lower = 0> lambdad;
-  //real<lower = 0> lambdac;
 }
 transformed parameters {
   real<lower = 0, upper = 1> thetah[K];
   real<lower = 0, upper = 1> thetaf[K];
-  //real<lower = 0> sigmac;
-  //real<lower = 0> sigmad;
-  //sigmac = inv_sqrt(lambdac);
-  //sigmad = inv_sqrt(lambdad);
-
+  
   for (i in 1:K) {
     thetah[i] = Phi(d[i] / 2 - c[i]);
     thetaf[i] = Phi(-d[i] / 2 - c[i]);
   }
 }
+
 model {
   muc ~ normal(0, 5);
   mud ~ normal(0, 5);
-  sigmad ~ normal(0,5);
-  sigmac ~ normal(0,5);
+  sigmad ~ normal(0, 5);
+  sigmac ~ normal(0, 5);
   d ~ normal(mud, sigmad);
   c ~ normal(muc, sigmac);
   hits ~ binomial(N, thetah);

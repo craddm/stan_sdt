@@ -259,7 +259,8 @@ all_data <- list(N = dim(stan_counts)[1],
                  K = stan_counts$trial_count,
                  y = stan_counts$totals,
                  preds = model.matrix(~Touch,stan_counts),
-                 npar = 2)
+                 npar = 2,
+                 J_1 = stan_counts$Subject)
 all_data
 ```
 
