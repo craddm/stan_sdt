@@ -159,16 +159,13 @@ model {
 }
 ```
 
-```{r}
+```{r fit_no_pooling}
 no_pool_fit <- sampling(no_pool_hits, data = hits_pooled)
-```
-```{r}
 no_pool_fit
 stan_plot(no_pool_fit, pars = "theta")
 ```
 
 Now there are 21 individual parameters, one for each subject and their hit-rate. 
-
 
 ## Partial pooling
 
@@ -190,11 +187,10 @@ model {
   y ~ binomial(K, theta);
 }
 ```
-```{r}
+
+```{r partial_pooling}
 hits_pp <- sampling(part_pool, data = hits_pooled)
 hits_pp
-```
-```{r}
 stan_plot(hits_pp, pars = "theta")
 stan_plot(no_pool_fit, pars = "theta")
 ```

@@ -11,6 +11,7 @@ Try executing this chunk by clicking the *Run* button within the chunk or by pla
 library(tidyverse)
 library(readxl)
 library(rstan)
+options(contrasts=c('contr.sum','contr.poly'))
 ```
 
 ```{r}
@@ -44,11 +45,9 @@ first_test <- tACS_Data %>%
   select(Light, Touch, Response, Accuracy, Reported)
 
 first_test
-mm <- model.matrix(~Touch + Light,first_test)
-mm
+mm <- model.matrix(~Touch * Light,first_test)
 
-list_data <- list(N = nrow(first_test), K = 3, y = first_test$Reported, para = mm)
-list_data
+list_data <- list(N = nrow(first_test), K = dim(mm)[[2]], y = first_test$Reported, para = mm)
 
 ```
 
@@ -119,11 +118,11 @@ fit2 <- stan(
 totals <- first_test %>% group_by(Touch) %>%
   summarise(counts = sum(Reported))
 totals
-list_data
+#list_data
 
 
 tot_list <- list(N = nrow(first_test)/2, hits = totals$counts[1], fas = totals$counts[2])
-tot_list
+#tot_list
 
 model_dpr <- "
 data {
@@ -157,7 +156,7 @@ fit3 <- stan(
   data = tot_list,
   chains = 2
 )
-
+fit3
 ```
 ```{r}
 second_test <- tACS_Data %>%

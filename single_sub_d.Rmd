@@ -1,0 +1,131 @@
+---
+title: "Single subject Stan SDT"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_packages}
+library(tidyverse)
+library(rstan)
+library(readxl)
+options(contrasts=c('contr.sum','contr.poly'))
+tACS_Data <- read_excel("~/GitHub/IntExtTACS/data/tACSData 1-21.xlsx", sheet = "RawData")
+tACS_Data <- tACS_Data %>% 
+  filter(`TrialType[Trial]` != "NULL") %>%
+  mutate(Stimulation = factor(.$Group, labels = c("Sham","Active")),
+         Session = factor(.$Session, labels = c("First","Second")),
+         Light = factor((`TrialType[Trial]` == "light" | `TrialType[Trial]` == "bothWeak") + 0,
+                        levels = c(1, 0),
+                        labels = c("Light","No light")),
+         Touch = factor((`TrialType[Trial]` == "Weak" | `TrialType[Trial]` == "bothWeak") + 0,
+                        levels = c(1, 0),
+                        labels = c("Touch","No touch")),
+         Response = ordered(.$`ResponsePrompt.RESP[Trial]`,
+                           levels = c(4, 5, 6, 7),
+                           labels = c("Definitely yes", "Maybe yes", "Maybe no", "Definitely no")),
+         Reported = (.$`ResponsePrompt.RESP[Trial]` < 6)+0,
+         Accuracy = ((Reported == 1 & Touch == "Touch") | (Reported == 0 & Touch == "No touch")) + 0,
+         Confidence = factor((Response == "Definitely yes" | Response == "Definitely no") + 0, 
+                             levels = c(1, 0),
+                             labels = c("Definitely", "Maybe"))
+  )
+
+```
+
+Let's prep this first dataset.
+
+```{r prep_dat}
+subj_one <- tACS_Data %>%
+  filter(Subject == 1, Stimulation == "Sham", Light == "Light") %>%
+  select(Touch, Response, Accuracy, Reported)
+subj_one
+```
+
+We'll get counts for each response.
+```{r get_counts}
+library(metaSDT)
+
+S1_counts <- sdt_counts(subj_one, stimulus = Touch, response = Reported)
+S1_counts
+```
+
+Prepare the data for Stan as a list.
+
+```{r s1_stan_list}
+S1_stan <- list(N = sum(S1_counts$Touch), hits = S1_counts$Touch[[2]], fas = S1_counts$`No touch`[[2]])
+S1_stan
+```
+
+N is the number of trials per stimulus.
+hits is the number of correct reports of the stimulus.
+fas is the number of false alarms.
+
+```{stan output.var= single_d}
+data {
+  int<lower = 0> N;
+  int<lower = 0> hits;
+  int<lower = 0> fas;
+}
+parameters {
+  real d;
+  real c;
+}
+transformed parameters {
+  real<lower = 0, upper = 1> thetah;
+  real<lower = 0, upper = 1> thetaf;
+  thetah = Phi(d / 2 - c);
+  thetaf = Phi(-d / 2 - c);
+}
+model {
+  d ~ normal(0, 2);
+  c ~ normal(0, .707);
+  hits ~ binomial(N, thetah);
+  fas ~ binomial(N, thetaf);
+}
+generated quantities {
+  real c_prime;
+  c_prime = c / d;
+}
+```
+
+```{r stan_sampling}
+fit_single_d <- sampling(single_d, data = S1_stan)
+fit_single_d
+```
+
+
+```{r}
+
+```
+
+```{stan output.var= single__hm}
+data {
+  int<lower = 0> N;
+  int<lower = 0> hits;
+  int<lower = 0> fas;
+}
+parameters {
+  real d;
+  real c;
+}
+transformed parameters {
+  real<lower = 0, upper = 1> thetah;
+  real<lower = 0, upper = 1> thetaf;
+  thetah = Phi(d / 2 - c);
+  thetaf = Phi(-d / 2 - c);
+}
+model {
+  
+  d ~ normal(0, 2);
+  c ~ normal(0, .707);
+  hits ~ binomial(N, thetah);
+  fas ~ binomial(N, thetaf);
+}
+generated quantities {
+  real c_prime;
+  c_prime = c / d;
+}
+```
